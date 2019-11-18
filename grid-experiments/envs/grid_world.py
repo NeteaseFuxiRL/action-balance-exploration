@@ -239,6 +239,20 @@ class GridWorldEnv(gym.Env):
                  default_type=0, max_step=100,
                  windy=False, seed=None,
                  coords_scale=None):
+        """
+
+        Args:
+            n_width:
+            n_height:
+            action_num:
+            u_size:
+            default_reward:
+            default_type:
+            max_step:
+            windy:
+            seed:
+            coords_scale:
+        """
         self.u_size = u_size  # 当前格子绘制尺寸
         self.n_width = n_width  # 格子世界宽度（以格子数计）
         self.n_height = n_height  # 高度
@@ -286,6 +300,8 @@ class GridWorldEnv(gym.Env):
                                             dtype=np.float32)
 
         self.movable_types_dict = {}
+
+        self.rng = np.random.RandomState(seed=seed)
 
     def _adjust_size(self):
         '''调整场景尺寸适合最大宽度、高度不超过800
@@ -491,7 +507,7 @@ class GridWorldEnv(gym.Env):
                          (x * u_size + m, (y + 1) * u_size - m)]
 
                     rect = rendering.FilledPolygon(v)
-                    r = self.grids.get_reward(x, y) / 10
+                    r = self.grids.get_reward(x, y) / 100
                     if r < 0:
                         rect.set_color(0.9 - r, 0.9 + r, 0.9 + r)
                     elif r > 0:
@@ -693,8 +709,8 @@ class Character(object):
                                   (self.y - self.attack_range, self.y + self.attack_range)]
 
     def get_hidden_attributes(self):
-        return [self.damage, self.attack_range]
-        # return [self.damage, self.attack_range, self.damage_increase]
+        # return [self.damage, self.attack_range]
+        return [self.damage, self.attack_range, self.damage_increase]
 
     def get_coords(self):
         return self.x, self.y
@@ -1095,69 +1111,335 @@ class ShootEnv(GridWorldEnv):
         return each_time_max_attack_num, total_steps + current_steps, hp_left
 
 
-if __name__ == "__main__":
-    import time
-    myseed = 666
-    np.random.seed(myseed)
-    random.seed(myseed)
+class DelayRewardWrapper(gym.Wrapper):
+    def __init__(self, env):
+        gym.Wrapper.__init__(self, env)
 
-    n = 13
-    # env = ShootEnv(n_width=n,
-    #                n_height=n,
-    #                action_num=5,
-    #                u_size=60,
-    #                default_reward=-1,
-    #                default_type=0,
-    #                windy=False,
-    #                seed=myseed,
-    #                max_step=100,
-    #                end_reward=100,
-    #                enemy_attribute_dict_list=[
-    #                    {'x': n // 2, 'y': n // 2, 'hp': 350, 'damage': 100, 'attack_range': 3, 'max_hp': 350}
-    #                ],
-    #                player_attribute_dict={'x': None, 'y': None, 'hp': 350, 'damage': 40, 'attack_range': 1, 'max_hp': 350,
-    #                                       'heal_buff': 350},
-    #                state_scale=[1, 1, 1, 1])
+        self.history_rewards = 0.
 
-    n = 13
-    env = ShootEnv(n_width=n,
-                   n_height=n,
-                   action_num=4,
-                   u_size=60,
-                   default_reward=0,
-                   default_type=0,
-                   windy=False,
-                   seed=myseed,
-                   max_step=100,
-                   end_reward=100,
-                   enemy_attribute_dict_list=[
-                       # {'x': n // 2, 'y': n // 2, 'hp': 350, 'damage': 100, 'attack_range': 3, 'max_hp': 350}
-                       # {'x': n // 2, 'y': n // 2, 'hp': 350, 'max_hp': 350, 'damage': 60, 'attack_range': 2,
-                       #  'heal_buff': None},
-                       {'x': n // 2, 'y': n // 2, 'hp': 350, 'max_hp': 350, 'damage': 100, 'attack_range': 1,
-                        'heal_buff': None}
-                   ],
-                   player_attribute_dict={'x': None, 'y': None, 'hp': 350, 'damage': 50, 'attack_range': 1,
-                                          'max_hp': 350,
-                                          'heal_buff': 350},
+    def step(self, action):
+        state, reward, done, info = self.env.step(action)
+        self.history_rewards += reward
 
-                   state_scale=[13, 13, 350, 350],
-                   damage_reward_coef=0.0,
-                   heal_reward_coef=0.0
-                   )
+        if done:
+            reward = self.history_rewards
+            self.history_rewards = 0.
+        else:
+            reward = 0
 
-    env.reset()
-    print(env.enemy)
-    actions = [1, 4] * 10000
-    for i in range(100):
-        # action = env.action_space.sample()
-        action = actions[i]
-        env.render()
-        s, r, d, info = env.step(random.randint(0,3))
-        print(i, action, s, r, d, info)
-        time.sleep(0.4)
+        return state, reward, done, info
 
-        if d:
-            print('Done')
-            env.reset()
-            print(env.enemy)
+    def reset(self, **kwargs):
+        return self.env.reset()
+
+
+class StochasticGrid(GridWorldEnv):
+    def __init__(self, wall_start_x, teleport_prob, teleport_point=None, end_reward=None, *args, **kwargs):
+        self.wall_start_x = wall_start_x
+        self.teleport_prob = teleport_prob
+        self.end_reward = end_reward
+        super(StochasticGrid, self).__init__(*args, **kwargs)
+
+        self._init_grid()
+
+        self.teleports = {}  # {(x, y): probability}
+        self.set_teleports()
+        if teleport_point is None:
+            self.teleport_point = self.start
+        else:
+            self.teleport_point = teleport_point
+
+    def set_teleports(self):
+        for x in range(self.wall_start_x, self.n_width - 1):
+            self.teleports[(x, self.n_height // 2)] = self.teleport_prob
+
+    def _init_grid(self):
+        self.set_start_point((self.wall_start_x - 1, self.n_height // 2))
+        self.ends = [(self.n_width - 1, self.n_height // 2)]
+        if self.end_reward is not None:
+            for e in self.ends:
+                self.rewards.append((*e, self.end_reward))
+
+        # set walls
+        xs = list(range(self.wall_start_x, self.n_width)) * (self.n_height - 1)
+        ys = []
+        for i in range(self.n_height):
+            if i != self.n_height // 2:
+                ys.extend([i] * (self.n_width - self.wall_start_x))
+
+        self.types.extend(list(zip(xs, ys, [1] * len(xs))))
+
+        self.refresh_setting()
+
+    def step(self, action):
+        state, reward, done, info = super(StochasticGrid, self).step(action)
+
+        xy = (self.current_x, self.current_y)
+        if xy in self.teleports:
+            tele_prob = self.teleports[xy]
+            if self.rng.random_sample() < tele_prob:
+                # transport to start point
+                print('teleport')
+                self.current_x, self.current_y = self.teleport_point
+                state = self.state = self._get_obs()
+                reward = self.grids.get_reward(self.current_x, self.current_y)
+                done = self._is_done(self.current_x, self.current_y)
+
+        return state, reward, done, info
+
+
+class StochasticGridV2(GridWorldEnv):
+    def __init__(self, wall_start_x, teleport_prob, teleport_point=None, end_reward=None, *args, **kwargs):
+        self.wall_start_x = wall_start_x
+        self.teleport_prob = teleport_prob
+        self.end_reward = end_reward
+        self.teleport_size = 1
+
+        super(StochasticGridV2, self).__init__(*args, **kwargs)
+
+        self._init_grid()
+
+        self.teleports = {}  # {(x, y): probability}
+        self.set_teleports()
+        if teleport_point is None:
+            self.teleport_point = self.start
+        else:
+            self.teleport_point = teleport_point
+
+    def set_teleports(self):
+        # for x in range(self.wall_start_x, self.n_width - 1):
+        #     self.teleports[(x, self.n_height // 2)] = self.teleport_prob
+        for x in range(self.wall_start_x+1, min(self.wall_start_x+1 + self.teleport_size, self.n_width)):
+            for y in range(self.teleport_size):
+                self.teleports[(x, y)] = self.teleport_prob
+
+    def _init_grid(self):
+        self.set_start_point((0, 0))
+        # self.ends = [(self.n_width - 1, self.n_height - 1)]
+        self.ends = [(self.wall_start_x + 3, 0)]
+        if self.end_reward is not None:
+            for e in self.ends:
+                self.rewards.append((*e, self.end_reward))
+
+        # set walls
+        for y in range(1, self.n_height):
+            self.types.append((self.wall_start_x, y, 1))
+
+        self.refresh_setting()
+
+    def step(self, action):
+        state, reward, done, info = super(StochasticGridV2, self).step(action)
+
+        xy = (self.current_x, self.current_y)
+        if xy in self.teleports:
+            tele_prob = self.teleports[xy]
+            if self.rng.random_sample() < tele_prob:
+                # transport to start point
+                print('teleport')
+                self.current_x, self.current_y = self.teleport_point
+                state = self.state = self._get_obs()
+                reward = self.grids.get_reward(self.current_x, self.current_y)
+                done = self._is_done(self.current_x, self.current_y)
+
+        return state, reward, done, info
+
+
+def LargeGridWorld():
+    '''10*10的一个格子世界环境，设置参照：
+    http://cs.stanford.edu/people/karpathy/reinforcejs/gridworld_td.html
+    '''
+    env = GridWorldEnv(n_width=10,
+                       n_height=10,
+                       u_size=40,
+                       default_reward=0,
+                       default_type=0,
+                       windy=False)
+    env.start = (0, 9)
+    env.ends = [(5, 4)]
+    env.types = [(4, 2, 1), (4, 3, 1), (4, 4, 1), (4, 5, 1), (4, 6, 1), (4, 7, 1),
+                 (1, 7, 1), (2, 7, 1), (3, 7, 1), (4, 7, 1), (6, 7, 1), (7, 7, 1),
+                 (8, 7, 1)]
+    env.rewards = [(3, 2, -1), (3, 6, -1), (5, 2, -1), (6, 2, -1), (8, 3, -1),
+                   (8, 4, -1), (5, 4, 1), (6, 4, -1), (5, 5, -1), (6, 5, -1)]
+    env.refresh_setting()
+    return env
+
+
+def SimpleGridWorld():
+    '''无风10*10的格子，设置参照： David Silver强化学习公开课视频 第3讲, used
+    '''
+    env = GridWorldEnv(n_width=10,
+                       n_height=10,
+                       action_num=8,
+                       u_size=60,
+                       default_reward=-1,
+                       default_type=0,
+                       windy=False)
+    # env.action_space = spaces.Discrete(8)
+    env.start = (0, 0)
+    env.ends = [(9, 9)]
+    env.rewards = [(9, 9, 1)]
+    env.refresh_setting()
+    return env
+
+
+def SimpleGridWorld2():
+    '''无风10*7的格子，设置参照： David Silver强化学习公开课视频 第3讲
+    '''
+    env = GridWorldEnv(n_width=5,
+                       n_height=3,
+                       u_size=60,
+                       default_reward=-1,
+                       default_type=0,
+                       windy=False)
+    env.action_space = spaces.Discrete(4)
+    env.start = (0, 1)
+    env.ends = [(3, 1)]
+    env.rewards = [(3, 1, 1)]
+    env.refresh_setting()
+    return env
+
+
+def WindyGridWorld():
+    '''有风10*7的格子，设置参照： David Silver强化学习公开课视频 第5讲
+    '''
+    env = GridWorldEnv(n_width=10,
+                       n_height=7,
+                       u_size=60,
+                       default_reward=-1,
+                       default_type=0,
+                       windy=True)
+    env.start = (0, 3)
+    env.ends = [(7, 3)]
+    env.rewards = [(7, 3, 1)]
+
+    env.refresh_setting()
+    return env
+
+
+def RandomWalk():
+    '''随机行走示例环境
+    '''
+    env = GridWorldEnv(n_width=7,
+                       n_height=1,
+                       u_size=80,
+                       default_reward=0,
+                       default_type=0,
+                       windy=False)
+    env.action_space = spaces.Discrete(2)  # left or right
+    env.start = (3, 0)
+    env.ends = [(6, 0), (0, 0)]
+    env.rewards = [(6, 0, 1)]
+    env.refresh_setting()
+    return env
+
+
+def RandomWalk2(width):
+    '''随机行走示例环境
+    '''
+    if width % 2 == 0:
+        width = width + 1
+    env = GridWorldEnv(n_width=width,
+                       n_height=1,
+                       u_size=80,
+                       default_reward=0,
+                       default_type=0,
+                       windy=False)
+    env.action_space = spaces.Discrete(2)  # left or right
+    env.start = (int((width - 1) / 2), 0)
+    env.ends = [((width - 1), 0), (0, 0)]
+    env.rewards = [((width - 1), 0, 1)]
+    env.refresh_setting()
+    return env
+
+
+def CliffWalk():
+    '''悬崖行走格子世界环境
+    '''
+    env = GridWorldEnv(n_width=12,
+                       n_height=4,
+                       u_size=60,
+                       default_reward=-1,
+                       default_type=0,
+                       windy=False)
+    env.action_space = spaces.Discrete(4)  # left or right
+    env.start = (0, 0)
+    env.ends = [(11, 0)]
+    # env.rewards=[]
+    # env.types = [(5,1,1),(5,2,1)]
+    for i in range(10):
+        env.rewards.append((i + 1, 0, -100))
+        env.ends.append((i + 1, 0))
+    env.refresh_setting()
+    return env
+
+
+def DynaMaze():
+    '''Example 8.1
+    '''
+    env = GridWorldEnv(n_width=9,
+                       n_height=6,
+                       u_size=60,
+                       default_reward=0,
+                       default_type=0,
+                       windy=False)
+    env.action_space = spaces.Discrete(4)  # left or right
+    env.start = (0, 3)
+    env.ends = [(8, 5)]
+    env.rewards = [(8, 5, 1)]
+    env.types = [(2, 2, 1), (2, 3, 1), (2, 4, 1), (5, 1, 1), (7, 3, 1), (7, 4, 1), (7, 5, 1)]
+    env.refresh_setting()
+    return env
+
+
+def ChangingModel():
+    '''Example 8.2/8.3
+    '''
+    env = GridWorldEnv(n_width=10,
+                       n_height=7,
+                       u_size=60,
+                       default_reward=-1,
+                       default_type=0,
+                       windy=False)
+
+    env.start = (0, 0)
+    env.ends = [(4, 4)]
+    env.rewards = [(0, 6, 1)]
+    env.refresh_setting()
+    return env
+
+
+def ChangingModel2():
+    '''Example 8.2/8.3
+    '''
+    env = GridWorldEnv(n_width=9,
+                       n_height=6,
+                       u_size=60,
+                       default_reward=0,
+                       default_type=0,
+                       windy=False)
+    env.action_space = spaces.Discrete(4)  # left or right
+    env.start = (3, 0)
+    env.ends = [(8, 5)]
+    env.rewards = [(8, 5, 1)]
+    env.types = [(1, 2, 1), (2, 2, 1), (3, 2, 1), (4, 2, 1), (5, 2, 1), (6, 2, 1), (7, 2, 1)]
+    env.refresh_setting()
+    return env
+
+
+def SkullAndTreasure():
+    '''骷髅与钱币示例，解释随机策略的有效性 David Silver 强化学习公开课第六讲 策略梯度
+    '''
+    env = GridWorldEnv(n_width=5,
+                       n_height=2,
+                       u_size=60,
+                       default_reward=-1,
+                       default_type=0,
+                       windy=False)
+    env.action_space = spaces.Discrete(4)  # left or right
+    env.start = (0, 1)
+    env.ends = [(2, 0)]
+    env.rewards = [(0, 0, -100), (2, 0, 100), (4, 0, -100)]
+    env.types = [(1, 0, 1), (3, 0, 1)]
+    env.refresh_setting()
+    return env

@@ -4,7 +4,6 @@ import gym
 from gym import spaces
 import cv2
 from copy import copy
-from shoot_and_escape import ShootEnv
 
 cv2.ocl.setUseOpenCL(False)
 
