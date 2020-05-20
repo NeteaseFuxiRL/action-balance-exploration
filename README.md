@@ -1,7 +1,9 @@
+![fuxi_logo](https://github.com/NeteaseFuxiRL/FeverBasketball/blob/master/materials/image/Fuxi_logo.png)
+
 # Code for the paper "Exploring Unknown States with Action Balance"
 
 ## Usage
-**No endpoints test:**
+**Finding unknown states (Grid world):**
 
 Run following command for one group experiment.
 
@@ -10,7 +12,7 @@ cd grid-experiments && mkdir logs
 ./run_no_ends.sh no_ends_test run1 100 100 128 1
 ```
 
-**Reaching goals:**
+**Reaching goals (Grid world):**
 
 ```shell
 cd grid-experiments && mkdir logs
