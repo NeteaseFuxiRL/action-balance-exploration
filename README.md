@@ -2,6 +2,19 @@
 
 # Code for the paper "Exploring Unknown States with Action Balance"
 
+If you find this code useful, please reference in your paper:
+```
+@article{DBLP:journals/corr/abs-2003-04518,
+  author    = {Yan Song and
+               Yingfeng Chen and
+               Yujing Hu and
+               Changjie Fan},
+  title     = {Exploring Unknown States with Action Balance},
+  journal   = {CoRR},
+  year      = {2020}
+}
+```
+
 ## Usage
 **Finding unknown states (Grid world):**
 
@@ -30,3 +43,4 @@ This implementation is mainly based on **[random-network-distillation](https://g
 python3 -u run_atari.py --env=MontezumaRevengeNoFrameskip-v4 --num_env=32 --gamma_ext 0.999 --abc=1 --seed=0 --array_action=1 --logdir /tmp/action_balance_tmp_run
 ```
 
+If you have any question, please contact yansong1024@gmail.com.
